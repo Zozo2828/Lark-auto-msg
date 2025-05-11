@@ -1,28 +1,27 @@
 from flask import Flask, request, jsonify
 import json
+import sys
+import logging
+
+logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 
 app = Flask(__name__)
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json()
-
-    # ✅ Log 整包收到的 JSON 資料
-    print("\n📩 收到訊息 (原始資料):")
-    print(json.dumps(data, indent=2, ensure_ascii=False))
+    logging.info("📩 收到訊息: %s", json.dumps(data, ensure_ascii=False, indent=2))
 
     if data.get("type") == "url_verification":
         return jsonify({"challenge": data["challenge"]})
 
-    # ✅ 拆解文字內容
     event = data.get("event", {})
     message = event.get("message", {})
     content = json.loads(message.get("content", "{}")).get("text", "")
-
-    print(f"🧾 解析後文字內容: {content}")
+    logging.info("🧾 解析後文字內容: %s", content)
 
     if "新增" in content:
-        print("📢 偵測到『新增』，你可以在這裡加入通知邏輯！")
+        logging.info("📢 偵測到『新增』，你可以在這裡加入通知邏輯")
 
     return "ok"
 
