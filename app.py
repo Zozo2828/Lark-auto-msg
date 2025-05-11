@@ -18,7 +18,10 @@ def webhook():
 
     event = data.get("event", {})
     message = event.get("message", {})
-    msg_raw = json.loads(message.get("content", "{}"))
+    raw_content_str = message.get("content", "{}")
+    logging.info("🧪 原始 content: %s", raw_content_str)
+    msg_raw = json.loads(raw_content_str)
+
     content = ""
 
     # 嘗試抓 text（純文字訊息）
