@@ -1,68 +1,73 @@
-from flask import Flask, request, jsonify
-import json
-import sys
-import logging
 import requests
+import json
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+# 🔐 應用憑證
+APP_ID = "cli_a897c38c52b8d029"
+APP_SECRET = "nDlF541TrIb2S7Fq1wMcsdCQ1mSmEkG8"
 
-app = Flask(__name__)
+# 💬 群組 ID（chat_id）
+CHAT_ID = "oc_26ce9e9628f0f869d598dae7dcdd6fca"
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    data = request.get_json()
-    logging.info("📩 收到訊息: %s", json.dumps(data, ensure_ascii=False, indent=2))
-
-    if data.get("type") == "url_verification":
-        return jsonify({"challenge": data["challenge"]})
-
-    event = data.get("event", {})
-    message = event.get("message", {})
-    raw_content_str = message.get("content", "{}")
-    logging.info("🧪 原始 content: %s", raw_content_str)
-    msg_raw = json.loads(raw_content_str)
-
-    content = ""
-
-    # 嘗試抓 text（純文字訊息）
-    if "text" in msg_raw:
-        content = msg_raw["text"]
-
-    # 如果是 post 類型（卡片訊息）
-    elif "post" in msg_raw:
-        post_obj = msg_raw["post"]
-        lang = "zh_cn" if "zh_cn" in post_obj else "en_us" if "en_us" in post_obj else None
-        if lang:
-            try:
-                post = post_obj[lang]
-                title = post.get("title", "")
-                body_text = " ".join([
-                    item["text"]
-                    for line in post["content"]
-                    for item in line if item.get("tag") == "text"
-                ])
-                content = f"{title} {body_text}"
-            except Exception as e:
-                content = "[解析 post 卡片失敗]"
-        else:
-            content = "[無法讀取語系]"
-
+def get_app_access_token(app_id, app_secret):
+    url = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal/"
+    payload = {
+        "app_id": app_id,
+        "app_secret": app_secret
+    }
+    res = requests.post(url, json=payload)
+    data = res.json()
+    if data.get("code") == 0:
+        return data["app_access_token"]
     else:
-        content = "[無法擷取文字]"
+        print("❌ token 失敗:", data)
+        return None
 
-    logging.info("🧾 解析後文字內容: %s", content)
+def get_group_messages(chat_id, token, limit=20):
+    url = f"https://open.feishu.cn/open-apis/im/v1/messages"
+    params = {
+        "container_id_type": "chat",
+        "container_id": chat_id,
+        "page_size": limit
+    }
+    headers = {
+        "Authorization": f"Bearer {token}"
+    }
+    res = requests.get(url, headers=headers, params=params)
+    return res.json()
 
-    if "新增" in content:
-        logging.info("📢 偵測到『新增』，你可以在這裡加入通知邏輯")
+def is_lark_base_msg(item):
+    sender_type = item.get("sender", {}).get("sender_type")
+    msg_type = item.get("message_type")
+    return sender_type == "app" and msg_type == "post"
 
-        anycross_url = "https://open-sg.larksuite.com/anycross/trigger/your_webhook"
-        try:
-            res = requests.post(anycross_url, json=data)
-            logging.info("✅ 已轉發到 AnyCross，狀態碼: %s", res.status_code)
-        except Exception as e:
-            logging.error("❌ 轉發 AnyCross 失敗: %s", str(e))
-
-    return "ok"
+def parse_post_content(content_str):
+    try:
+        parsed = json.loads(content_str)
+        if "post" in parsed:
+            lang = "zh_cn" if "zh_cn" in parsed["post"] else "en_us"
+            post = parsed["post"][lang]
+            title = post.get("title", "")
+            body = " ".join([
+                i["text"] for line in post["content"]
+                for i in line if i.get("tag") == "text"
+            ])
+            return title, body
+    except Exception as e:
+        return "[解析失敗]", str(e)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    token = get_app_access_token(APP_ID, APP_SECRET)
+    if token:
+        print("🚀 Token OK，開始拉訊息")
+        result = get_group_messages(CHAT_ID, token)
+        items = result.get("items", [])
+        for msg in items:
+            if is_lark_base_msg(msg):
+                print("📦 [來自 Lark Base 的卡片]")
+                ts = msg.get("create_time")
+                content_raw = msg.get("body", {}).get("content", "{}")
+                title, body = parse_post_content(content_raw)
+                print(f"🕒 時間: {ts}")
+                print(f"📝 標題: {title}")
+                print(f"📋 內容: {body}")
+                print("-" * 40)
