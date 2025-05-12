@@ -1,73 +1,82 @@
+from flask import Flask, request, jsonify
 import requests
 import json
+import time
 
-# 🔐 應用憑證
+app = Flask(__name__)
+
+# === Lark 基本設定 ===
 APP_ID = "cli_a897c38c52b8d029"
 APP_SECRET = "nDlF541TrIb2S7Fq1wMcsdCQ1mSmEkG8"
-
-# 💬 群組 ID（chat_id）
 CHAT_ID = "oc_26ce9e9628f0f869d598dae7dcdd6fca"
 
-def get_app_access_token(app_id, app_secret):
-    url = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal/"
-    payload = {
-        "app_id": app_id,
-        "app_secret": app_secret
-    }
-    res = requests.post(url, json=payload)
+# === 取得 token ===
+def get_access_token():
+    url = "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal"
+    res = requests.post(url, json={"app_id": APP_ID, "app_secret": APP_SECRET})
     data = res.json()
-    if data.get("code") == 0:
-        return data["app_access_token"]
-    else:
-        print("❌ token 失敗:", data)
-        return None
+    return data.get("tenant_access_token") if data.get("code") == 0 else None
 
-def get_group_messages(chat_id, token, limit=20):
-    url = f"https://open.feishu.cn/open-apis/im/v1/messages"
+# === 取得群組訊息 ===
+def get_group_messages(token, limit=10):
+    url = "https://open.larksuite.com/open-apis/im/v1/messages"
     params = {
         "container_id_type": "chat",
-        "container_id": chat_id,
+        "container_id": CHAT_ID,
         "page_size": limit
     }
+    headers = {"Authorization": f"Bearer {token}"}
+    return requests.get(url, headers=headers, params=params).json()
+
+# === 傳訊息回群組 ===
+def reply_to_group(text, token):
+    url = "https://open.larksuite.com/open-apis/im/v1/messages?receive_id_type=chat_id"
     headers = {
-        "Authorization": f"Bearer {token}"
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
     }
-    res = requests.get(url, headers=headers, params=params)
-    return res.json()
+    body = {
+        "receive_id": CHAT_ID,
+        "msg_type": "text",
+        "content": json.dumps({"text": text})
+    }
+    return requests.post(url, headers=headers, json=body).status_code == 200
 
-def is_lark_base_msg(item):
-    sender_type = item.get("sender", {}).get("sender_type")
-    msg_type = item.get("message_type")
-    return sender_type == "app" and msg_type == "post"
+# === 檢查是不是 Lark Base 的卡片訊息 ===
+def is_base_card(msg):
+    return msg.get("sender", {}).get("sender_type") == "app" and msg.get("message_type") == "post"
 
-def parse_post_content(content_str):
+def extract_card_title(content_str):
     try:
-        parsed = json.loads(content_str)
-        if "post" in parsed:
-            lang = "zh_cn" if "zh_cn" in parsed["post"] else "en_us"
-            post = parsed["post"][lang]
-            title = post.get("title", "")
-            body = " ".join([
-                i["text"] for line in post["content"]
-                for i in line if i.get("tag") == "text"
-            ])
-            return title, body
-    except Exception as e:
-        return "[解析失敗]", str(e)
+        content = json.loads(content_str)
+        return content.get("post", {}).get("zh_cn", {}).get("title", "")
+    except:
+        return "[解析失敗]"
 
+# === Webhook 入口 ===
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    token = get_access_token()
+    if not token:
+        return jsonify({"error": "取得 token 失敗"}), 500
+
+    result = get_group_messages(token)
+    found = []
+    for msg in result.get("items", []):
+        if is_base_card(msg):
+            ts = int(msg["create_time"]) // 1000
+            tstr = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+            content = msg.get("body", {}).get("content", "")
+            title = extract_card_title(content)
+            found.append(f"{tstr}｜{title}")
+
+    if found:
+        reply = "⚠️ 偵測到 Lark Base 卡片：\\n" + "\\n".join(found)
+        reply_to_group(reply, token)
+        return jsonify({"status": "sent", "cards": found})
+    else:
+        return jsonify({"status": "ok", "message": "沒有找到 Base 卡片"})
+
+# === 啟動 Flask ===
 if __name__ == "__main__":
-    token = get_app_access_token(APP_ID, APP_SECRET)
-    if token:
-        print("🚀 Token OK，開始拉訊息")
-        result = get_group_messages(CHAT_ID, token)
-        items = result.get("items", [])
-        for msg in items:
-            if is_lark_base_msg(msg):
-                print("📦 [來自 Lark Base 的卡片]")
-                ts = msg.get("create_time")
-                content_raw = msg.get("body", {}).get("content", "{}")
-                title, body = parse_post_content(content_raw)
-                print(f"🕒 時間: {ts}")
-                print(f"📝 標題: {title}")
-                print(f"📋 內容: {body}")
-                print("-" * 40)
+    app.run(host="0.0.0.0", port=10000)
