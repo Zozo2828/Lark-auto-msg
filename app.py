@@ -1,41 +1,60 @@
-from flask import Flask, request, jsonify
-import requests
+import os
+import time
 import json
-import logging
+import requests
+from flask import Flask, jsonify
 
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
 
-# TODO: 設定你的 Lark token & chat_id
-TENANT_ACCESS_TOKEN = "<你的 tenant_access_token>"
-CHAT_ID = "<你的群組 chat_id>"
+APP_ID = os.getenv("APP_ID")
+APP_SECRET = os.getenv("APP_SECRET")
+CHAT_ID = os.getenv("CHAT_ID")
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    data = request.get_json()
-    logging.info("✅ 收到訊息: %s", data)
+# 快取 token 和過期時間
+TOKEN_CACHE = {
+    "token": None,
+    "expire_at": 0
+}
 
-    # 嘗試抓出文字訊息或卡片內容
-    try:
-        event = data.get("event", {})
-        message = event.get("message", {})
-        raw_content_str = message.get("content", "{}")
-        msg_type = message.get("message_type", "")
-        content_raw = json.loads(raw_content_str)
+def get_tenant_access_token():
+    now = int(time.time())
+    if TOKEN_CACHE["token"] and now < TOKEN_CACHE["expire_at"]:
+        return TOKEN_CACHE["token"]
 
-        if msg_type == "text":
-            content = content_raw.get("text", "")
-            logging.info("💬 純文字內容: %s", content)
+    url = "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal"
+    payload = {
+        "app_id": APP_ID,
+        "app_secret": APP_SECRET
+    }
+    resp = requests.post(url, json=payload)
+    data = resp.json()
 
-        elif msg_type == "interactive":
-            title = content_raw.get("title", "")
-            logging.info("📌 卡片標題: %s", title)
-            # 可以加上自動通知的動作，例如 call API
+    if data.get("code") != 0:
+        raise Exception(f"Failed to get token: {data}")
 
-    except Exception as e:
-        logging.error("❌ 錯誤: %s", e)
+    token = data["tenant_access_token"]
+    expire = data["expire"]  # 有效秒數
+    TOKEN_CACHE["token"] = token
+    TOKEN_CACHE["expire_at"] = now + expire - 60  # 提前一分鐘過期
 
-    return "ok"
+    return token
 
-if __name__ == '__main__':
+@app.route("/fetch-messages", methods=["GET"])
+def fetch_messages():
+    token = get_tenant_access_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    url = "https://open.larksuite.com/open-apis/im/v1/messages"
+
+    params = {
+        "container_id_type": "chat",
+        "container_id": CHAT_ID,
+        "page_size": 10  # 調整你要拿幾筆
+    }
+
+    resp = requests.get(url, headers=headers, params=params)
+    data = resp.json()
+
+    return jsonify(data)
+
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
